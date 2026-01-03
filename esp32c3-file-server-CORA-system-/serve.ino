@@ -2,9 +2,9 @@
 #include <WebServer.h>
 #include <SPI.h>
 #include <SD.h>
+
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
-#include <HTTPClient.h>
 
 // ===== PINOS =====
 #define TFT_RST   9
@@ -17,16 +17,8 @@
 #define SD_MISO   5
 
 // ===== WIFI =====
-const char* ssid = "CAI FORA";
-const char* password = "c9246ymr";
-
-// ===== DUCKDNS =====
-const char* duckToken  = "d433a33e-87ec-4d88-ba7b-759db0bbb905";   // coloque seu token DuckDNS
-const char* duckDomain = "myserve32";        // seu domínio DuckDNS (sem .duckdns.org)
-
-// ===== LOGIN =====
-const char* www_username = "admin";
-const char* www_password = "1234";
+const char* ssid = "Your_network";
+const char* password = "Your password";
 
 // ===== SPI =====
 SPIClass spi = SPIClass(FSPI);
@@ -104,28 +96,27 @@ String listDirHTML(const String& path) {
   return html;
 }
 
-// ===== AUTENTICAÇÃO =====
-bool isAuthenticated() {
-  if (!server.authenticate(www_username, www_password)) {
-    server.requestAuthentication();
-    return false;
-  }
-  return true;
-}
-
 // ===== PÁGINA PRINCIPAL =====
 void handleRoot() {
-  if (!isAuthenticated()) return;
-
   if (server.hasArg("path")) currentPath = server.arg("path");
 
   String html = "<!DOCTYPE html><html><body>";
   html += "<h2>Servidor ESP32-C3</h2>";
-  html += "<p>Usuário autenticado ✅</p>";
 
   html += "<p><b>Total:</b> " + formatMB(sdTotal()) + "</p>";
   html += "<p><b>Usado:</b> " + formatMB(sdUsed()) + "</p>";
   html += "<p><b>Livre:</b> " + formatMB(sdFree()) + "</p>";
+
+  html += "<form method='POST' action='/upload?path=" + currentPath + "' enctype='multipart/form-data'>";
+  html += "<input type='file' name='file'>";
+  html += "<input type='submit' value='Enviar'>";
+  html += "</form>";
+
+  html += "<form method='GET' action='/mkdir'>";
+  html += "<input type='hidden' name='path' value='" + currentPath + "'>";
+  html += "<input type='text' name='name' placeholder='Nova pasta'>";
+  html += "<input type='submit' value='Criar'>";
+  html += "</form>";
 
   html += listDirHTML(currentPath);
   html += "</body></html>";
@@ -135,8 +126,6 @@ void handleRoot() {
 
 // ===== CRIAR PASTA =====
 void handleMkdir() {
-  if (!isAuthenticated()) return;
-
   String path = server.arg("path");
   String name = server.arg("name");
 
@@ -147,8 +136,6 @@ void handleMkdir() {
 
 // ===== EXCLUIR =====
 void handleDelete() {
-  if (!isAuthenticated()) return;
-
   String path = server.arg("path");
   String name = server.arg("name");
   String fullPath = path + "/" + name;
@@ -164,8 +151,6 @@ void handleDelete() {
 
 // ===== DOWNLOAD =====
 void handleDownload() {
-  if (!isAuthenticated()) return;
-
   String path = server.arg("path");
   String fileName = server.arg("file");
   String fullPath = path + "/" + fileName;
@@ -178,41 +163,6 @@ void handleDownload() {
   File file = SD.open(fullPath, FILE_READ);
   server.streamFile(file, "application/octet-stream");
   file.close();
-}
-
-// ===== UPLOAD =====
-void handleUpload() {
-  if (!isAuthenticated()) return;
-
-  HTTPUpload& upload = server.upload();
-  if (upload.status == UPLOAD_FILE_START) {
-    uploadFile = SD.open(currentPath + "/" + upload.filename, FILE_WRITE);
-    tft.println("Recebendo:");
-    tft.println(upload.filename);
-  } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
-  } else if (upload.status == UPLOAD_FILE_END) {
-    if (uploadFile) uploadFile.close();
-    tft.println("Concluido");
-  }
-}
-
-// ===== DUCKDNS UPDATE =====
-void updateDuckDNS() {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    String url = "https://www.duckdns.org/update?domains=" + String(duckDomain) + "&token=" + String(duckToken) + "&ip=";
-    http.begin(url);
-    int httpCode = http.GET();
-    if (httpCode > 0) {
-      Serial.println("DuckDNS atualizado!");
-      tft.println("DuckDNS OK");
-    } else {
-      Serial.println("Falha DuckDNS");
-      tft.println("DuckDNS ERRO");
-    }
-    http.end();
-  }
 }
 
 // ===== SETUP =====
@@ -250,7 +200,25 @@ void setup() {
   server.on("/mkdir", HTTP_GET, handleMkdir);
   server.on("/delete", HTTP_GET, handleDelete);
   server.on("/download", HTTP_GET, handleDownload);
-  server.on("/upload", HTTP_POST, []() { server.send(200, "text/plain", "OK"); }, handleUpload);
+
+  server.on(
+    "/upload",
+    HTTP_POST,
+    []() { server.send(200, "text/plain", "OK"); },
+    []() {
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START) {
+        uploadFile = SD.open(currentPath + "/" + upload.filename, FILE_WRITE);
+        tft.println("Recebendo:");
+        tft.println(upload.filename);
+      } else if (upload.status == UPLOAD_FILE_WRITE) {
+        if (uploadFile) uploadFile.write(upload.buf, upload.currentSize);
+      } else if (upload.status == UPLOAD_FILE_END) {
+        if (uploadFile) uploadFile.close();
+        tft.println("Concluido");
+      }
+    }
+  );
 
   server.begin();
   tft.println("Servidor ON");
@@ -259,10 +227,4 @@ void setup() {
 // ===== LOOP =====
 void loop() {
   server.handleClient();
-
-  static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate > 300000) { // a cada 5 minutos
-    updateDuckDNS();
-    lastUpdate = millis();
-  }
 }
